@@ -1,0 +1,31 @@
+--- a/Meta/CMake/compile_options.cmake
++++ b/Meta/CMake/compile_options.cmake
+@@ -47,7 +47,7 @@
+     if (MSVC)
+         set(CMAKE_REQUIRED_LINK_OPTIONS /WX)
+     else()
+-        set(CMAKE_REQUIRED_LINK_OPTIONS -Werror)
++        set(CMAKE_REQUIRED_LINK_OPTIONS )
+     endif()
+     check_linker_flag(CXX ${option} LAGOM_LINKER_SUPPORTS_${option})
+     if (${LAGOM_LINKER_SUPPORTS_${option}})
+@@ -107,7 +107,7 @@
+ add_cxx_compile_options(-Wno-unused-command-line-argument)
+ add_cxx_only_compile_options(-Wno-user-defined-literals)
+ 
+-add_cxx_compile_options(-Werror)
++add_cxx_compile_options()
+ 
+ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+     add_cxx_compile_options(-Wpadded-bitfield)
+--- a/Meta/CMake/rust_crate.cmake
++++ b/Meta/CMake/rust_crate.cmake
+@@ -22,7 +22,7 @@
+ endif()
+ 
+ # Compiler flags shared by Rust libraries, binaries, and tests.
+-set(RUSTC_TARGET_FLAGS -Dwarnings ${RUSTC_TARGET_CPU_FLAGS} ${RUSTC_TARGET_FRAME_POINTER_FLAGS})
++set(RUSTC_TARGET_FLAGS ${RUSTC_TARGET_CPU_FLAGS} ${RUSTC_TARGET_FRAME_POINTER_FLAGS})
+ list(JOIN RUSTC_TARGET_FLAGS " " RUSTC_TARGET_FLAGS)
+ 
+ # import_rust_crate(MANIFEST_PATH path/to/Cargo.toml CRATE_NAME name [PANIC_UNWIND] [NO_DEFAULT_FEATURES]

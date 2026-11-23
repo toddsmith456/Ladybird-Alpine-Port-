@@ -1,0 +1,11 @@
+--- a/Libraries/LibMediaCodecs/CMakeLists.txt
++++ b/Libraries/LibMediaCodecs/CMakeLists.txt
+@@ -64,7 +64,7 @@
+ target_link_libraries(LibMediaCodecs PUBLIC LibAudio)
+ 
+ if (NOT ANDROID)
+-    target_link_libraries(LibMediaCodecs PRIVATE PkgConfig::AVCODEC PkgConfig::AVUTIL)
++    target_link_libraries(LibMediaCodecs PUBLIC PkgConfig::AVCODEC PkgConfig::AVUTIL)
+ else()
+     target_include_directories(LibMediaCodecs PRIVATE ${FFMPEG_INCLUDE_DIRS})
+     target_link_directories(LibMediaCodecs PRIVATE ${FFMPEG_LIBRARY_DIRS})

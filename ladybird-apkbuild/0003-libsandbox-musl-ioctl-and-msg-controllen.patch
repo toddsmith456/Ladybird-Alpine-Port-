@@ -1,0 +1,19 @@
+--- a/Libraries/LibSandbox/Seccomp.cpp
++++ b/Libraries/LibSandbox/Seccomp.cpp
+@@ -14,6 +14,7 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <linux/audit.h>
++#include <linux/ioctl.h>
+ #include <linux/netlink.h>
+ #include <linux/sched.h>
+ #include <linux/seccomp.h>
+@@ -1288,7 +1289,7 @@
+         .msg_iov = &request_io,
+         .msg_iovlen = 1,
+         .msg_control = &request_control,
+-        .msg_controllen = CMSG_SPACE(passed_fd_count * sizeof(int)),
++        .msg_controllen = static_cast<socklen_t>(CMSG_SPACE(passed_fd_count * sizeof(int))),
+         .msg_flags = 0,
+     };
+ 

@@ -1,0 +1,156 @@
+# Maintainer: Alpine Ladybird Package Builder <builder@local>
+pkgname=ladybird
+pkgver=2026.47.7
+pkgrel=0
+pkgdesc="Truly independent web browser"
+url="https://ladybird.org/"
+arch="x86_64"
+license="BSD-2-Clause"
+depends="
+	ca-certificates
+	font-dejavu
+	qt6-qtbase-wayland
+	"
+makedepends="
+	bison
+	brotli-dev
+	cargo
+	clang21
+	cmake
+	curl-dev
+	dav1d-dev
+	dbus-dev
+	fast_float
+	flex
+	fontconfig-dev
+	freetype-dev
+	git
+	glib-dev
+	glslang
+	gn
+	harfbuzz-dev
+	icu-dev
+	libavif-dev
+	libpng-dev
+	libpsl-dev
+	libwebp-dev
+	libxcb-dev
+	libxml2-dev
+	lld22
+	llvm21-linker-tools
+	mesa-dev
+	mimalloc2-dev
+	mold
+	nasm
+	ninja-build
+	openssl-dev
+	patchelf
+	perl
+	pulseaudio-dev
+	python3
+	qt6-qtbase-dev
+	qt6-qtpositioning-dev
+	rust
+	sdl3-dev
+	simdjson-dev
+	simdutf-dev
+	sqlite-dev
+	unzip
+	vulkan-headers
+	vulkan-loader-dev
+	wayland-dev
+	wayland-protocols
+	woff2-dev
+	xcb-util-wm-dev
+	zlib-dev
+	"
+options="!check"
+ldpath="/usr/lib/ladybird"
+sonameprefix="$pkgname:"
+source="https://download.ladybird.org/linux/$pkgver/ladybird-$pkgver-source.tar.xz
+	0001-cmake-drop-warnings-as-errors-for-musl-and-rust-1.100.patch
+	0002-cmake-cargo-1.100-build-script-output-path.patch
+	0003-libsandbox-musl-ioctl-and-msg-controllen.patch
+	0004-libmediacodecs-public-ffmpeg-headers.patch
+	0005-libjs-rust-disable-glibc-pkey-on-musl.patch
+	"
+builddir="$srcdir/ladybird-$pkgver"
+
+build() {
+	local _deps_prefix="${LADYBIRD_DEPS_PREFIX:-/opt/ladybird-deps}"
+	if [ ! -f "$_deps_prefix/lib/pkgconfig/skia.pc" ] || \
+	   [ ! -f "$_deps_prefix/lib/pkgconfig/angle.pc" ] || \
+	   [ ! -f "$_deps_prefix/lib/pkgconfig/libavcodec-ladybird.pc" ]; then
+		error "Private dependencies not found in $_deps_prefix; run build-private-deps.sh first"
+		return 1
+	fi
+
+	export PKG_CONFIG_PATH="$_deps_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+	export CARGO_INCREMENTAL=0
+
+	cmake -B "$builddir/build" -G Ninja -S "$builddir" \
+		-DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_C_COMPILER=/usr/lib/llvm21/bin/clang \
+		-DCMAKE_CXX_COMPILER=/usr/lib/llvm21/bin/clang++ \
+		-DCMAKE_PREFIX_PATH="$_deps_prefix" \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib/ladybird \
+		-DCMAKE_INSTALL_LIBEXECDIR=libexec/ladybird \
+		-DCMAKE_INSTALL_DATADIR=share \
+		-DCMAKE_INSTALL_RPATH=/usr/lib/ladybird \
+		-DBUILD_SHARED_LIBS=ON \
+		-DBUILD_TESTING=OFF \
+		-DENABLE_INSTALL_HEADERS=OFF \
+		-DENABLE_INSTALL_FREEDESKTOP_FILES=ON \
+		-DLADYBIRD_ENABLE_LTO=OFF \
+		-DLADYBIRD_ENABLE_CPPTRACE=OFF \
+		-DLADYBIRD_GENERATE_SYMBOL_FILES=OFF \
+		-DLADYBIRD_ENABLE_UPDATE_CHECK=OFF \
+		-DLADYBIRD_BASELINE_CPU_TARGET=ON \
+		-DLADYBIRD_VERSION="$pkgver" \
+		-DLAGOM_USE_LINKER=mold \
+		-DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
+		-DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
+		-DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,$_deps_prefix/lib" \
+		-DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,$_deps_prefix/lib" \
+		-DCMAKE_MODULE_LINKER_FLAGS="-Wl,-rpath-link,$_deps_prefix/lib"
+
+	/usr/lib/ninja-build/bin/ninja -C "$builddir/build" ladybird WebDriver
+}
+
+package() {
+	local _build_dir="${LADYBIRD_BUILD_DIR:-$builddir/build}"
+	local _deps_prefix="${LADYBIRD_DEPS_PREFIX:-/opt/ladybird-deps}"
+	local _src_dir="${LADYBIRD_SRC_DIR:-$builddir}"
+
+	DESTDIR="$pkgdir" cmake --install "$_build_dir" --strip --component ladybird_Runtime
+	DESTDIR="$pkgdir" cmake --install "$_build_dir" --component ladybird_Freedesktop
+
+	# Bundle private shared libraries (Skia 148, ANGLE 7258, FFmpeg 9.0.2, zmij)
+	cp -a "$_deps_prefix"/lib/*.so* "$pkgdir"/usr/lib/ladybird/
+	rm -f "$pkgdir"/usr/lib/ladybird/libavcodec-ladybird.so \
+		"$pkgdir"/usr/lib/ladybird/libavutil-ladybird.so \
+		"$pkgdir"/usr/lib/ladybird/libswresample-ladybird.so
+
+	# Set clean private RUNPATH on all installed binaries and bundled shared libraries
+	local f
+	for f in "$pkgdir"/usr/bin/Ladybird "$pkgdir"/usr/bin/WebDriver \
+		"$pkgdir"/usr/libexec/ladybird/* "$pkgdir"/usr/lib/ladybird/*.so*; do
+		if [ -f "$f" ] && [ ! -L "$f" ]; then
+			chmod 0755 "$f"
+			patchelf --set-rpath /usr/lib/ladybird "$f"
+		fi
+	done
+
+	ln -sf Ladybird "$pkgdir"/usr/bin/ladybird
+	install -Dm644 "$_src_dir"/LICENSE "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
+}
+sha512sums="
+152e7c808f6a234b58c81fb0914021dd08c6f8abd84f1d00b3d256063043d41a0a4168b7dd416dbe43c44784a0c46561bc89b8cb95da033b08dbe4b122934cdb  ladybird-2026.47.7-source.tar.xz
+f66498f013a30af10727bffd2a02f94c773fa4de5233bd41b03edbe2eab06d1d5ee835acd1fe5b996048fbbac6974798c7912a737ff89508f0d9df586c755921  0001-cmake-drop-warnings-as-errors-for-musl-and-rust-1.100.patch
+64a94c1616d8f8fd2dfcb1d607b38bf321e9ccc99df916ac9e77344e11a1f0fa33c9bc5aa8dd1d295001cf23bdd7b3326b94e3400b1df52c28cb34b467403270  0002-cmake-cargo-1.100-build-script-output-path.patch
+4e9b0e4428874b5d11ef01996994d8da30fffa56135ac2dccd65d059d408546c2a5c2b7978f687d43957cceef318dc97788f10c746d1f6d1028e37585be51785  0003-libsandbox-musl-ioctl-and-msg-controllen.patch
+d12177bebe28cc33cc4b27c8991e58a2b42e21759da13974ed5d810ff6d5b89fe6642039afb9b6fa3e3835f17ee1a935bdc562d8ec5e1bc03644c3682f2b3ef7  0004-libmediacodecs-public-ffmpeg-headers.patch
+b3776150f6c06253828ad95cf8687d011d7ea467303cc5ddd26fc6845ced02bcd929c18a0d0ea68c7c1e48b45e69378e10cdebe53927ab2506a3e3b030623d9e  0005-libjs-rust-disable-glibc-pkey-on-musl.patch
+"
