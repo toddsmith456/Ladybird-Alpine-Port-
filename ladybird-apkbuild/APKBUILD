@@ -1,7 +1,7 @@
 # Maintainer: Alpine Ladybird Package Builder <builder@local>
 pkgname=ladybird
 pkgver=2026.47.7
-pkgrel=0
+pkgrel=1
 pkgdesc="Truly independent web browser"
 url="https://ladybird.org/"
 arch="x86_64"
@@ -9,6 +9,7 @@ license="BSD-2-Clause"
 depends="
 	ca-certificates
 	font-dejavu
+	icu-data-full
 	qt6-qtbase-wayland
 	"
 makedepends="
@@ -73,6 +74,8 @@ source="https://download.ladybird.org/linux/$pkgver/ladybird-$pkgver-source.tar.
 	0003-libsandbox-musl-ioctl-and-msg-controllen.patch
 	0004-libmediacodecs-public-ffmpeg-headers.patch
 	0005-libjs-rust-disable-glibc-pkey-on-musl.patch
+	0006-libsandbox-musl-seccomp-syscalls.patch
+	0007-ak-musl-stack-bounds.patch
 	"
 builddir="$srcdir/ladybird-$pkgver"
 
@@ -112,7 +115,7 @@ build() {
 		-DLAGOM_USE_LINKER=mold \
 		-DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
 		-DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
-		-DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,$_deps_prefix/lib" \
+		-DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,$_deps_prefix/lib -Wl,-z,stack-size=8388608" \
 		-DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,$_deps_prefix/lib" \
 		-DCMAKE_MODULE_LINKER_FLAGS="-Wl,-rpath-link,$_deps_prefix/lib"
 
@@ -153,4 +156,6 @@ f66498f013a30af10727bffd2a02f94c773fa4de5233bd41b03edbe2eab06d1d5ee835acd1fe5b99
 4e9b0e4428874b5d11ef01996994d8da30fffa56135ac2dccd65d059d408546c2a5c2b7978f687d43957cceef318dc97788f10c746d1f6d1028e37585be51785  0003-libsandbox-musl-ioctl-and-msg-controllen.patch
 d12177bebe28cc33cc4b27c8991e58a2b42e21759da13974ed5d810ff6d5b89fe6642039afb9b6fa3e3835f17ee1a935bdc562d8ec5e1bc03644c3682f2b3ef7  0004-libmediacodecs-public-ffmpeg-headers.patch
 b3776150f6c06253828ad95cf8687d011d7ea467303cc5ddd26fc6845ced02bcd929c18a0d0ea68c7c1e48b45e69378e10cdebe53927ab2506a3e3b030623d9e  0005-libjs-rust-disable-glibc-pkey-on-musl.patch
+3037475e8f5970b7740d4e61c371bc30bd60261b944846eeb8124db69c5b939a8b64b595ba7723744f75d5bb15dae2ae3c296e53cecab682eb07f6836346ec2e  0006-libsandbox-musl-seccomp-syscalls.patch
+f9772359ff7f8b42420d3abacaf4fdc7c86f28e8983a30eaf4fa7304a4fa6209f0494c0420b123bd1f99096dbd7b503ae6e3eb5666436ae90ca854273f3a2551  0007-ak-musl-stack-bounds.patch
 "

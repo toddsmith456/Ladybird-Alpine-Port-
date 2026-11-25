@@ -1,0 +1,290 @@
+--- a/Libraries/LibSandbox/Sandbox.cpp
++++ b/Libraries/LibSandbox/Sandbox.cpp
+@@ -941,13 +941,23 @@
+     if (TRY(count_threads()) != 1)
+         return Error::from_string_literal("The file system must be restricted before the process starts a second thread");
+ 
++    // On distributions with unbundled ICU data (such as Alpine Linux), libicudata.so is a stub
++    // that lazily opens /usr/share/icu/<version>/icudt*.dat at runtime. Also allow /usr/share/zoneinfo
++    // and /etc/localtime read-only for timezone lookups inside sandboxed renderers.
++    Vector<PathRule> effective_paths;
++    for (auto const& path : paths)
++        TRY(effective_paths.try_append(path));
++    TRY(add_path_if_exists(effective_paths, "/usr/share/icu"sv, PathRule::Access::ReadOnly));
++    TRY(add_path_if_exists(effective_paths, "/usr/share/zoneinfo"sv, PathRule::Access::ReadOnly));
++    TRY(add_path_if_exists(effective_paths, "/etc/localtime"sv, PathRule::Access::ReadOnly));
++
+     // Any failure means we can't have Landlock here: a kernel without it says ENOSYS or EOPNOTSUPP, and a container's
+     // own seccomp filter can say anything.
+     auto landlock_abi = syscall(__NR_landlock_create_ruleset, nullptr, 0, LANDLOCK_CREATE_RULESET_VERSION);
+     if (landlock_abi > 0 && !sandbox_debugging_is_enabled())
+-        return restrict_filesystem_with_landlock(paths, landlock_abi);
++        return restrict_filesystem_with_landlock(effective_paths.span(), landlock_abi);
+ 
+-    return start_file_broker(paths);
++    return start_file_broker(effective_paths.span());
+ }
+ #endif
+ 
+--- a/Libraries/LibSandbox/Seccomp.cpp
++++ b/Libraries/LibSandbox/Seccomp.cpp
+@@ -133,6 +133,8 @@
+ #define IF_DEFINED_execveat(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_exit(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_exit_group(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_fadvise64(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_fadvise64_64(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_fallocate(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_fchmod(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_fcntl(if_defined, if_not_defined) if_defined
+@@ -166,6 +168,7 @@
+ #define IF_DEFINED_link(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_linkat(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_lseek(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_lstat(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_madvise(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_membarrier(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_memfd_create(if_defined, if_not_defined) if_defined
+@@ -183,11 +186,15 @@
+ #define IF_DEFINED_pipe2(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_poll(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_pread64(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_preadv(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_preadv2(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_ppoll(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_prctl(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_prlimit64(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_pselect6(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_pwrite64(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_pwritev(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_pwritev2(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_read(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_readlink(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_readlinkat(if_defined, if_not_defined) if_defined
+@@ -224,6 +231,7 @@
+ #define IF_DEFINED_symlinkat(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_sysinfo(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_tgkill(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_tkill(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_unlink(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_unlinkat(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_umask(if_defined, if_not_defined) if_defined
+@@ -301,6 +309,14 @@
+ #    undef IF_DEFINED_execveat
+ #    define IF_DEFINED_execveat(if_defined, if_not_defined) if_not_defined
+ #endif
++#ifndef __NR_fadvise64
++#    undef IF_DEFINED_fadvise64
++#    define IF_DEFINED_fadvise64(if_defined, if_not_defined) if_not_defined
++#endif
++#ifndef __NR_fadvise64_64
++#    undef IF_DEFINED_fadvise64_64
++#    define IF_DEFINED_fadvise64_64(if_defined, if_not_defined) if_not_defined
++#endif
+ #ifndef __NR_fallocate
+ #    undef IF_DEFINED_fallocate
+ #    define IF_DEFINED_fallocate(if_defined, if_not_defined) if_not_defined
+@@ -405,6 +421,14 @@
+ #    undef IF_DEFINED_pread64
+ #    define IF_DEFINED_pread64(if_defined, if_not_defined) if_not_defined
+ #endif
++#ifndef __NR_preadv
++#    undef IF_DEFINED_preadv
++#    define IF_DEFINED_preadv(if_defined, if_not_defined) if_not_defined
++#endif
++#ifndef __NR_preadv2
++#    undef IF_DEFINED_preadv2
++#    define IF_DEFINED_preadv2(if_defined, if_not_defined) if_not_defined
++#endif
+ #ifndef __NR_readlink
+ #    undef IF_DEFINED_readlink
+ #    define IF_DEFINED_readlink(if_defined, if_not_defined) if_not_defined
+@@ -445,6 +469,14 @@
+ #    undef IF_DEFINED_pwrite64
+ #    define IF_DEFINED_pwrite64(if_defined, if_not_defined) if_not_defined
+ #endif
++#ifndef __NR_pwritev
++#    undef IF_DEFINED_pwritev
++#    define IF_DEFINED_pwritev(if_defined, if_not_defined) if_not_defined
++#endif
++#ifndef __NR_pwritev2
++#    undef IF_DEFINED_pwritev2
++#    define IF_DEFINED_pwritev2(if_defined, if_not_defined) if_not_defined
++#endif
+ #ifndef __NR_recvmmsg
+ #    undef IF_DEFINED_recvmmsg
+ #    define IF_DEFINED_recvmmsg(if_defined, if_not_defined) if_not_defined
+@@ -477,6 +509,10 @@
+ #    undef IF_DEFINED_shutdown
+ #    define IF_DEFINED_shutdown(if_defined, if_not_defined) if_not_defined
+ #endif
++#ifndef __NR_lstat
++#    undef IF_DEFINED_lstat
++#    define IF_DEFINED_lstat(if_defined, if_not_defined) if_not_defined
++#endif
+ #ifndef __NR_stat
+ #    undef IF_DEFINED_stat
+ #    define IF_DEFINED_stat(if_defined, if_not_defined) if_not_defined
+@@ -509,6 +545,10 @@
+ #    undef IF_DEFINED_sysinfo
+ #    define IF_DEFINED_sysinfo(if_defined, if_not_defined) if_not_defined
+ #endif
++#ifndef __NR_tkill
++#    undef IF_DEFINED_tkill
++#    define IF_DEFINED_tkill(if_defined, if_not_defined) if_not_defined
++#endif
+ #ifndef __NR_umask
+ #    undef IF_DEFINED_umask
+ #    define IF_DEFINED_umask(if_defined, if_not_defined) if_not_defined
+@@ -730,6 +770,15 @@
+ #ifdef __NR_fchmodat2
+         CASE_SYSCALL_NAME(fchmodat2);
+ #endif
++#ifdef __NR_fadvise64
++        CASE_SYSCALL_NAME(fadvise64);
++#endif
++#ifdef __NR_fadvise64_64
++        CASE_SYSCALL_NAME(fadvise64_64);
++#endif
++#ifdef __NR_fchown
++        CASE_SYSCALL_NAME(fchown);
++#endif
+ #ifdef __NR_fchownat
+         CASE_SYSCALL_NAME(fchownat);
+ #endif
+@@ -949,6 +998,12 @@
+ #ifdef __NR_pread64
+         CASE_SYSCALL_NAME(pread64);
+ #endif
++#ifdef __NR_preadv
++        CASE_SYSCALL_NAME(preadv);
++#endif
++#ifdef __NR_preadv2
++        CASE_SYSCALL_NAME(preadv2);
++#endif
+ #ifdef __NR_prlimit64
+         CASE_SYSCALL_NAME(prlimit64);
+ #endif
+@@ -967,6 +1022,12 @@
+ #ifdef __NR_pwrite64
+         CASE_SYSCALL_NAME(pwrite64);
+ #endif
++#ifdef __NR_pwritev
++        CASE_SYSCALL_NAME(pwritev);
++#endif
++#ifdef __NR_pwritev2
++        CASE_SYSCALL_NAME(pwritev2);
++#endif
+ #ifdef __NR_quotactl
+         CASE_SYSCALL_NAME(quotactl);
+ #endif
+@@ -1114,6 +1175,9 @@
+ #ifdef __NR_tgkill
+         CASE_SYSCALL_NAME(tgkill);
+ #endif
++#ifdef __NR_tkill
++        CASE_SYSCALL_NAME(tkill);
++#endif
+ #ifdef __NR_truncate
+         CASE_SYSCALL_NAME(truncate);
+ #endif
+@@ -1693,6 +1757,10 @@
+     case __NR_faccessat2:
+         return simple_broker_call(Operation::Access, number(0), path(1), number(2), static_cast<u32>(number(3)));
+ #endif
++#ifdef __NR_lstat
++    case __NR_lstat:
++        return stat_through_broker(AT_FDCWD, path(0), reinterpret_cast<void*>(registers.arguments[1]), false);
++#endif
+ #ifdef __NR_stat
+     case __NR_stat:
+         return stat_through_broker(AT_FDCWD, path(0), reinterpret_cast<void*>(registers.arguments[1]), true);
+@@ -2027,6 +2095,7 @@
+     SECCOMP_APPEND_PATH_SYSCALL_IF_DEFINED(*this, faccessat2);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, fstatfs);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, getdents64);
++    SECCOMP_APPEND_PATH_SYSCALL_IF_DEFINED(*this, lstat);
+     SECCOMP_APPEND_PATH_SYSCALL_IF_DEFINED(*this, newfstatat);
+     SECCOMP_APPEND_PATH_SYSCALL_IF_DEFINED(*this, readlink);
+     SECCOMP_APPEND_PATH_SYSCALL_IF_DEFINED(*this, readlinkat);
+@@ -2106,7 +2175,14 @@
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, ftruncate);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, lseek);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, pread64);
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, preadv);
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, preadv2);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, pwrite64);
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, pwritev);
++    // musl 1.2.6 implements pwrite() via pwritev2(..., RWF_NOAPPEND).
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, pwritev2);
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, fadvise64);
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, fadvise64_64);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, sendfile);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, memfd_create);
+ 
+@@ -2201,6 +2277,16 @@
+     append(SECCOMP_LOAD_SYSCALL_NR);
+     append(BPF_STMT(BPF_ALU | BPF_ADD | BPF_K, 0));
+ #endif
++
++#ifdef TIOCGWINSZ
++    // musl implements isatty() with ioctl(fd, TIOCGWINSZ, &ws).
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ioctl, 0, 5));
++    append(SECCOMP_LOAD_ARGUMENT(1));
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCGWINSZ, 0, 1));
++    append(SECCOMP_ALLOW);
++    append(SECCOMP_LOAD_SYSCALL_NR);
++    append(BPF_STMT(BPF_ALU | BPF_ADD | BPF_K, 0));
++#endif
+ }
+ 
+ void SeccompPolicy::allow_process_creation()
+@@ -2722,6 +2808,18 @@
+     append(SECCOMP_ALLOW);
+     append(SECCOMP_LOAD_SYSCALL_NR);
+ #endif
++#ifdef __NR_tkill
++    // musl implements raise() and pthread_kill() with tkill(tid, sig).
++    if (signals_stay_within_the_process_tree()) {
++        SECCOMP_APPEND_ALLOW_SYSCALL(*this, tkill);
++    } else {
++        append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tkill, 0, 4));
++        append(SECCOMP_LOAD_ARGUMENT(0));
++        append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<u32>(getpid()), 0, 1));
++        append(SECCOMP_ALLOW);
++        append(SECCOMP_LOAD_SYSCALL_NR);
++    }
++#endif
+ }
+ 
+ void SeccompPolicy::allow_clocks()
+@@ -2965,6 +3063,10 @@
+     append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 0, 1));
+     append(SECCOMP_ERRNO(EPERM));
+ #endif
++#ifdef __NR_tkill
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tkill, 0, 1));
++    append(SECCOMP_ERRNO(EPERM));
++#endif
+ 
+ #ifdef __NR_prctl
+     append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_prctl, 0, 1));
+@@ -3099,7 +3201,7 @@
+         { __NR_bind, brokered },
+ #endif
+ #ifdef __NR_lstat
+-        { __NR_lstat, refused(ENOSYS) },
++        { __NR_lstat, brokered },
+ #endif
+ #ifdef __NR_statx
+         { __NR_statx, refused(ENOSYS) },
+@@ -3146,6 +3248,9 @@
+ #ifdef __NR_lchown
+         { __NR_lchown, refused(EPERM) },
+ #endif
++#ifdef __NR_fchown
++        { __NR_fchown, refused(EPERM) },
++#endif
+ #ifdef __NR_fchownat
+         { __NR_fchownat, refused(EPERM) },
+ #endif

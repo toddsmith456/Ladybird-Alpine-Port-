@@ -1,0 +1,101 @@
+--- a/AK/StackInfo.cpp
++++ b/AK/StackInfo.cpp
+@@ -15,6 +15,11 @@
+ #elif defined(AK_OS_LINUX) || defined(AK_LIBC_GLIBC) || defined(AK_OS_MACOS) || defined(AK_OS_IOS) || defined(AK_OS_NETBSD) || defined(AK_OS_SOLARIS) || defined(AK_OS_HAIKU)
+ #    include <pthread.h>
+ #    include <sys/resource.h>
++#    if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID) && !defined(AK_LIBC_GLIBC)
++#        include <dlfcn.h>
++#        include <errno.h>
++#        include <unistd.h>
++#    endif
+ #elif defined(AK_OS_FREEBSD) || defined(AK_OS_OPENBSD)
+ #    include <pthread.h>
+ #    include <pthread_np.h>
+@@ -127,7 +132,7 @@
+         getrlimit(RLIMIT_STACK, &limit);
+         rlim_t size = limit.rlim_cur;
+         if (size == RLIM_INFINITY)
+-            size = 8 * 0x10000;
++            size = 8 * MiB;
+         // account for a guard page
+         size -= static_cast<rlim_t>(sysconf(_SC_PAGESIZE));
+         m_size = static_cast<size_t>(size);
+@@ -139,3 +144,42 @@
+ }
+ 
+ }
++
++#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID) && !defined(AK_LIBC_GLIBC)
++// musl's pthread_getattr_np() only probes currently mapped pages of the main thread's stack (~128 KiB at startup)
++// instead of RLIMIT_STACK (8 MiB). Expand the reported main-thread stack bounds to match glibc so C++ and Rust
++// callers (AK::StackInfo, ak::stack, LibJS/Rust parser & RegExp engine, libwasm_engine, Rust std) all see the true
++// stack limit.
++extern "C" __attribute__((visibility("default"))) int pthread_getattr_np(pthread_t thread, pthread_attr_t* attr)
++{
++    using PthreadGetattrNpFn = int (*)(pthread_t, pthread_attr_t*);
++    static auto real_pthread_getattr_np = reinterpret_cast<PthreadGetattrNpFn>(dlsym(RTLD_NEXT, "pthread_getattr_np"));
++    if (!real_pthread_getattr_np)
++        return ENOSYS;
++
++    int rc = real_pthread_getattr_np(thread, attr);
++    if (rc != 0)
++        return rc;
++
++    if (pthread_equal(thread, pthread_self()) && getpid() == static_cast<pid_t>(gettid())) {
++        void* base = nullptr;
++        size_t size = 0;
++        if (pthread_attr_getstack(attr, &base, &size) == 0 && base != nullptr && size > 0) {
++            auto top = reinterpret_cast<uintptr_t>(base) + size;
++            rlimit limit {};
++            if (getrlimit(RLIMIT_STACK, &limit) == 0) {
++                auto page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
++                rlim_t full_size = (limit.rlim_cur == RLIM_INFINITY) ? static_cast<rlim_t>(8 * MiB) : limit.rlim_cur;
++                if (full_size > page_size)
++                    full_size -= page_size;
++                if (static_cast<size_t>(full_size) > size && top > static_cast<size_t>(full_size)) {
++                    auto* new_base = reinterpret_cast<void*>(top - static_cast<size_t>(full_size));
++                    (void)pthread_attr_setstack(attr, new_base, static_cast<size_t>(full_size));
++                }
++            }
++        }
++    }
++
++    return 0;
++}
++#endif
+--- a/AK/Rust/src/stack.rs
++++ b/AK/Rust/src/stack.rs
+@@ -33,7 +33,31 @@
+         let mut size = 0;
+         let result = libc::pthread_attr_getstack(&raw const attributes, &raw mut address, &raw mut size);
+         libc::pthread_attr_destroy(&raw mut attributes);
+-        (result == 0).then_some(address as usize)
++        if result != 0 {
++            return None;
++        }
++        let mut lowest = address as usize;
++        #[cfg(target_env = "musl")]
++        {
++            // musl's pthread_getattr_np() only probes currently mapped pages of the main thread's stack.
++            if libc::getpid() == libc::syscall(libc::SYS_gettid) as libc::pid_t {
++                let mut limit: libc::rlimit = std::mem::zeroed();
++                if libc::getrlimit(libc::RLIMIT_STACK, &raw mut limit) == 0 {
++                    let page_size = libc::sysconf(libc::_SC_PAGESIZE) as usize;
++                    let mut full_size = if limit.rlim_cur == libc::RLIM_INFINITY {
++                        8 * 1024 * 1024
++                    } else {
++                        limit.rlim_cur as usize
++                    };
++                    full_size = full_size.saturating_sub(page_size);
++                    if full_size > size {
++                        let top = lowest.saturating_add(size);
++                        lowest = top.saturating_sub(full_size);
++                    }
++                }
++            }
++        }
++        Some(lowest)
+     }
+ }
+ 
